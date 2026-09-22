@@ -1,10 +1,11 @@
 import argparse
 import hashlib
 import json
+import os
 import time
 from pathlib import Path
 
-from google import genai
+from openai import OpenAI
 
 
 # ============================================================
@@ -23,31 +24,51 @@ DEFAULT_CACHE_FILE = Path(
     "output/data_dictionary_cache.json"
 )
 
-GEMINI_MODEL = "gemini-3.6-flash"
+OPENROUTER_MODEL = "openrouter/free"
+
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 MAX_RETRIES = 4
 RETRY_DELAY_SECONDS = 5
 
 
 # ============================================================
-# GEMINI CLIENT
+# OPENROUTER CLIENT
 # ============================================================
 
-def create_gemini_client():
+def create_openrouter_client():
     """
-    Create and return a Gemini client.
+    Create and return an OpenRouter client.
+
+    The API key is read from the OPENROUTER_API_KEY
+    environment variable.
     """
+
+    api_key = os.getenv(
+        "OPENROUTER_API_KEY"
+    )
+
+    if not api_key:
+
+        raise RuntimeError(
+            "OPENROUTER_API_KEY is not configured. "
+            "Please configure your OpenRouter API key "
+            "as an environment variable or Codespaces secret."
+        )
 
     try:
 
-        client = genai.Client()
+        client = OpenAI(
+            api_key=api_key,
+            base_url=OPENROUTER_BASE_URL
+        )
 
     except Exception as error:
 
         raise RuntimeError(
-            "Unable to initialize the Gemini client. "
-            "Make sure your Gemini API credentials are "
-            "configured correctly."
+            "Unable to initialize the OpenRouter client. "
+            "Make sure your OpenRouter API credentials "
+            "are configured correctly."
         ) from error
 
     return client
@@ -261,7 +282,7 @@ def save_cache_metadata(
 
 def build_prompt(metadata):
     """
-    Build the Gemini classification prompt.
+    Build the AI classification prompt.
     """
 
     prompt = f"""
@@ -536,7 +557,7 @@ def validate_result(
 
 
 # ============================================================
-# GEMINI RETRY LOGIC
+# OPENROUTER RETRY LOGIC
 # ============================================================
 
 def generate_with_retries(
@@ -544,7 +565,7 @@ def generate_with_retries(
     prompt
 ):
     """
-    Call Gemini with retry handling for temporary failures.
+    Call OpenRouter with retry handling for temporary failures.
     """
 
     last_error = None
@@ -555,17 +576,28 @@ def generate_with_retries(
     ):
 
         print(
-            f"Gemini attempt {attempt}/{MAX_RETRIES}..."
+            f"OpenRouter attempt {attempt}/{MAX_RETRIES}..."
         )
 
         try:
 
-            response = client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=prompt,
-                config={
-                    "response_mime_type": "application/json"
-                }
+            response = client.chat.completions.create(
+                model=OPENROUTER_MODEL,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a data classification engine. "
+                            "Follow the user's instructions exactly "
+                            "and return only valid JSON."
+                        )
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                temperature=0
             )
 
             return response
@@ -587,7 +619,11 @@ def generate_with_retries(
                 "timeout",
                 "internal server error",
                 "429",
-                "rate limit"
+                "rate limit",
+                "too many requests",
+                "502",
+                "504",
+                "gateway"
             ]
 
             is_retryable = any(
@@ -601,7 +637,7 @@ def generate_with_retries(
             ):
 
                 print(
-                    "Gemini is temporarily unavailable. "
+                    "OpenRouter is temporarily unavailable. "
                     f"Retrying in {RETRY_DELAY_SECONDS} seconds..."
                 )
 
@@ -614,7 +650,7 @@ def generate_with_retries(
                 break
 
     raise RuntimeError(
-        "Gemini failed after "
+        "OpenRouter failed after "
         f"{MAX_RETRIES} attempts."
     ) from last_error
 
@@ -672,14 +708,14 @@ def profile_dataset(
     cache_file=DEFAULT_CACHE_FILE
 ):
     """
-    Use Gemini to classify all dataset variables.
+    Use OpenRouter to classify all dataset variables.
 
     The profiler first checks whether a cached dictionary
     belongs to the current dataset metadata.
 
-    If it does, Gemini is skipped.
+    If it does, OpenRouter is skipped.
 
-    If it does not, Gemini is called and a new fingerprint
+    If it does not, OpenRouter is called and a new fingerprint
     is saved.
     """
 
@@ -713,7 +749,7 @@ def profile_dataset(
         )
 
         print(
-            "Gemini call skipped."
+            "OpenRouter call skipped."
         )
 
         print(
@@ -731,14 +767,14 @@ def profile_dataset(
     )
 
     print(
-        "Gemini profiling required."
+        "OpenRouter profiling required."
     )
 
     # --------------------------------------------------------
-    # GEMINI CLIENT
+    # OPENROUTER CLIENT
     # --------------------------------------------------------
 
-    client = create_gemini_client()
+    client = create_openrouter_client()
 
     # --------------------------------------------------------
     # BUILD PROMPT
@@ -749,7 +785,7 @@ def profile_dataset(
     )
 
     # --------------------------------------------------------
-    # CALL GEMINI WITH RETRIES
+    # CALL OPENROUTER WITH RETRIES
     # --------------------------------------------------------
 
     response = generate_with_retries(
@@ -758,25 +794,45 @@ def profile_dataset(
     )
 
     # --------------------------------------------------------
-    # VALIDATE RESPONSE
+    # EXTRACT RESPONSE
     # --------------------------------------------------------
 
-    if not response or not response.text:
+    if not response:
 
         raise RuntimeError(
-            "Gemini returned an empty response."
+            "OpenRouter returned an empty response."
         )
+
+    if not response.choices:
+
+        raise RuntimeError(
+            "OpenRouter returned no choices."
+        )
+
+    response_text = (
+        response.choices[0].message.content
+    )
+
+    if not response_text:
+
+        raise RuntimeError(
+            "OpenRouter returned an empty response."
+        )
+
+    # --------------------------------------------------------
+    # VALIDATE JSON
+    # --------------------------------------------------------
 
     try:
 
         result = json.loads(
-            response.text
+            response_text
         )
 
     except json.JSONDecodeError as error:
 
         raise ValueError(
-            "Gemini returned invalid JSON. "
+            "OpenRouter returned invalid JSON. "
             "The data dictionary could not be parsed."
         ) from error
 
@@ -861,7 +917,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(
         description=(
-            "Use Gemini to generate an AI data dictionary "
+            "Use OpenRouter to generate an AI data dictionary "
             "from dataset metadata."
         )
     )
