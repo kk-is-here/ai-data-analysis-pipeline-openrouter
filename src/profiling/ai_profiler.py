@@ -2,6 +2,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import time
 from pathlib import Path
 
@@ -26,9 +27,12 @@ DEFAULT_CACHE_FILE = Path(
 
 OPENROUTER_MODEL = "openrouter/free"
 
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+OPENROUTER_BASE_URL = (
+    "https://openrouter.ai/api/v1"
+)
 
 MAX_RETRIES = 4
+
 RETRY_DELAY_SECONDS = 5
 
 
@@ -101,7 +105,10 @@ def load_metadata(metadata_file):
 
         metadata = json.load(file)
 
-    if not isinstance(metadata, list):
+    if not isinstance(
+        metadata,
+        list
+    ):
 
         raise ValueError(
             "Metadata JSON must contain a list of "
@@ -154,8 +161,9 @@ def load_cached_dictionary(
     Load an existing AI data dictionary only if its cache
     fingerprint matches the current dataset metadata.
 
-    Returns:
-        list or None
+    Returns
+    -------
+    list or None
     """
 
     output_file = Path(
@@ -188,7 +196,10 @@ def load_cached_dictionary(
 
         return None
 
-    if not isinstance(cache, dict):
+    if not isinstance(
+        cache,
+        dict
+    ):
 
         return None
 
@@ -297,6 +308,7 @@ You must distinguish between:
 3. SEMANTIC SUBTYPE
 
 Allowed semantic types:
+
 - categorical
 - numeric
 - binary
@@ -306,6 +318,7 @@ Allowed semantic types:
 - geographic
 
 Allowed measurement scales:
+
 - nominal
 - ordinal
 - interval
@@ -313,12 +326,14 @@ Allowed measurement scales:
 - not_applicable
 
 Allowed semantic subtypes:
+
 - currency
 - percentage
 - none
 
 
 CLASSIFICATION RULES
+
 
 1. DATETIME
 
@@ -488,7 +503,16 @@ IMPORTANT:
 - Do not omit an observed category from category_order merely because it was not present in sample_values.
 - For ordinal numeric variables, category_order should include all observed response values when they represent ordered response levels.
 
+
+OUTPUT REQUIREMENTS
+
 Return ONLY valid JSON.
+
+Do not use Markdown code fences.
+
+Do not include explanations before or after the JSON.
+
+The response must contain one classification object for every dataset column.
 
 Use exactly this structure:
 
@@ -499,7 +523,7 @@ Use exactly this structure:
     "measurement_scale": "ratio",
     "semantic_subtype": "none",
     "confidence": 0.99,
-    "ordered": true,
+    "ordered": false,
     "category_order": [],
     "reason": "Age has a meaningful zero and ratios are meaningful."
   }}
@@ -557,6 +581,220 @@ def validate_result(
 
 
 # ============================================================
+# EXTRACT JSON FROM AI RESPONSE
+# ============================================================
+
+def extract_json_from_response(response_text):
+    """
+    Extract a JSON object or JSON array from an AI response.
+
+    Handles:
+
+    1. Plain JSON
+    2. Markdown JSON code fences
+    3. Explanatory text before/after JSON
+    4. JSON objects containing the classification list
+    """
+
+    if not response_text:
+
+        raise ValueError(
+            "OpenRouter returned an empty response."
+        )
+
+    text = str(
+        response_text
+    ).strip()
+
+    if not text:
+
+        raise ValueError(
+            "OpenRouter returned an empty response."
+        )
+
+    # --------------------------------------------------------
+    # Attempt 1: direct JSON parsing
+    # --------------------------------------------------------
+
+    try:
+
+        return json.loads(
+            text
+        )
+
+    except json.JSONDecodeError:
+
+        pass
+
+    # --------------------------------------------------------
+    # Attempt 2: remove Markdown code fences
+    # --------------------------------------------------------
+
+    cleaned = re.sub(
+        r"^```(?:json)?\s*",
+        "",
+        text,
+        flags=re.IGNORECASE
+    )
+
+    cleaned = re.sub(
+        r"\s*```$",
+        "",
+        cleaned
+    ).strip()
+
+    try:
+
+        return json.loads(
+            cleaned
+        )
+
+    except json.JSONDecodeError:
+
+        pass
+
+    # --------------------------------------------------------
+    # Attempt 3: find JSON array
+    # --------------------------------------------------------
+
+    array_start = cleaned.find(
+        "["
+    )
+
+    array_end = cleaned.rfind(
+        "]"
+    )
+
+    if (
+        array_start != -1
+        and array_end > array_start
+    ):
+
+        candidate = cleaned[
+            array_start:array_end + 1
+        ]
+
+        try:
+
+            return json.loads(
+                candidate
+            )
+
+        except json.JSONDecodeError:
+
+            pass
+
+    # --------------------------------------------------------
+    # Attempt 4: find JSON object
+    # --------------------------------------------------------
+
+    object_start = cleaned.find(
+        "{"
+    )
+
+    object_end = cleaned.rfind(
+        "}"
+    )
+
+    if (
+        object_start != -1
+        and object_end > object_start
+    ):
+
+        candidate = cleaned[
+            object_start:object_end + 1
+        ]
+
+        try:
+
+            return json.loads(
+                candidate
+            )
+
+        except json.JSONDecodeError:
+
+            pass
+
+    raise ValueError(
+        "OpenRouter returned content that could not be "
+        "parsed as valid JSON."
+    )
+
+
+# ============================================================
+# NORMALIZE AI RESULT
+# ============================================================
+
+def normalize_ai_result(
+    result
+):
+    """
+    Normalize possible JSON wrapper structures.
+
+    Expected final structure:
+
+    [
+        {...},
+        {...}
+    ]
+
+    Some models may instead return:
+
+    {
+        "data_dictionary": [
+            {...},
+            {...}
+        ]
+    }
+
+    or:
+
+    {
+        "columns": [
+            {...},
+            {...}
+        ]
+    }
+    """
+
+    if isinstance(
+        result,
+        list
+    ):
+
+        return result
+
+    if isinstance(
+        result,
+        dict
+    ):
+
+        possible_keys = [
+            "data_dictionary",
+            "dataDictionary",
+            "dictionary",
+            "columns",
+            "results",
+            "classifications"
+        ]
+
+        for key in possible_keys:
+
+            value = result.get(
+                key
+            )
+
+            if isinstance(
+                value,
+                list
+            ):
+
+                return value
+
+    return result
+
+
+# ============================================================
 # OPENROUTER RETRY LOGIC
 # ============================================================
 
@@ -588,8 +826,10 @@ def generate_with_retries(
                         "role": "system",
                         "content": (
                             "You are a data classification engine. "
-                            "Follow the user's instructions exactly "
-                            "and return only valid JSON."
+                            "Follow the user's instructions exactly. "
+                            "Return ONLY valid JSON. "
+                            "Do not use Markdown. "
+                            "Do not add explanations."
                         )
                     },
                     {
@@ -623,7 +863,9 @@ def generate_with_retries(
                 "too many requests",
                 "502",
                 "504",
-                "gateway"
+                "gateway",
+                "connection",
+                "timed out"
             ]
 
             is_retryable = any(
@@ -809,9 +1051,25 @@ def profile_dataset(
             "OpenRouter returned no choices."
         )
 
-    response_text = (
-        response.choices[0].message.content
-    )
+    message = response.choices[0].message
+
+    if message is None:
+
+        raise RuntimeError(
+            "OpenRouter returned no message."
+        )
+
+    response_text = message.content
+
+    if response_text is None:
+
+        raise RuntimeError(
+            "OpenRouter returned an empty message."
+        )
+
+    response_text = str(
+        response_text
+    ).strip()
 
     if not response_text:
 
@@ -820,20 +1078,55 @@ def profile_dataset(
         )
 
     # --------------------------------------------------------
-    # VALIDATE JSON
+    # PARSE JSON
     # --------------------------------------------------------
 
     try:
 
-        result = json.loads(
+        result = extract_json_from_response(
             response_text
         )
 
-    except json.JSONDecodeError as error:
+        result = normalize_ai_result(
+            result
+        )
+
+    except ValueError as error:
+
+        # Print a shortened response to make future debugging
+        # much easier without flooding the terminal.
+
+        preview = response_text
+
+        if len(preview) > 4000:
+
+            preview = (
+                preview[:4000]
+                + "\n...[response truncated]"
+            )
+
+        print()
+        print(
+            "=" * 70
+        )
+        print(
+            "OPENROUTER RESPONSE COULD NOT BE PARSED"
+        )
+        print(
+            "=" * 70
+        )
+        print(
+            preview
+        )
+        print(
+            "=" * 70
+        )
+        print()
 
         raise ValueError(
             "OpenRouter returned invalid JSON. "
-            "The data dictionary could not be parsed."
+            "The data dictionary could not be parsed. "
+            f"Parser error: {error}"
         ) from error
 
     # --------------------------------------------------------
@@ -876,7 +1169,8 @@ def profile_dataset(
 
             raise ValueError(
                 "AI profiler returned columns that were not "
-                f"present in the dataset: {sorted(extra_columns)}"
+                "present in the dataset: "
+                f"{sorted(extra_columns)}"
             )
 
         raise ValueError(

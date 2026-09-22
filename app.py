@@ -1,8 +1,8 @@
 import streamlit as st
 from pathlib import Path
-import shutil
 import subprocess
 import sys
+import streamlit.components.v1 as components
 
 
 # ============================================================
@@ -167,9 +167,7 @@ if run_button:
     # Progress display
     # --------------------------------------------------------
 
-    progress = st.progress(
-        0
-    )
+    progress = st.progress(0)
 
     status = st.empty()
 
@@ -177,9 +175,7 @@ if run_button:
         "Starting AI Data Analysis Pipeline..."
     )
 
-    progress.progress(
-        10
-    )
+    progress.progress(10)
 
     # --------------------------------------------------------
     # Run pipeline
@@ -201,9 +197,7 @@ if run_button:
             text=True
         )
 
-        progress.progress(
-            100
-        )
+        progress.progress(100)
 
         # ----------------------------------------------------
         # Pipeline success
@@ -220,7 +214,7 @@ if run_button:
             )
 
             # ------------------------------------------------
-            # Display terminal output
+            # Pipeline details
             # ------------------------------------------------
 
             with st.expander(
@@ -233,7 +227,7 @@ if run_button:
                 )
 
             # ------------------------------------------------
-            # Report
+            # DISPLAY REPORT
             # ------------------------------------------------
 
             if REPORT_FILE.exists():
@@ -243,37 +237,42 @@ if run_button:
                 )
 
                 st.success(
-                    "HTML dashboard generated successfully."
+                    "Analysis dashboard generated successfully."
                 )
 
-                report_url = (
-                    "analysis_report.html"
-                )
-
-                st.markdown(
-                    f"""
-                    ### 📊 Open Dashboard
-
-                    [Open Analysis Dashboard]({report_url})
-                    """
-                )
-
-                # ------------------------------------------------
-                # Download report
-                # ------------------------------------------------
+                # --------------------------------------------
+                # Read complete HTML report
+                # --------------------------------------------
 
                 with open(
                     REPORT_FILE,
-                    "rb"
+                    "r",
+                    encoding="utf-8"
                 ) as report:
 
-                    st.download_button(
-                        label="⬇️ Download HTML Report",
-                        data=report,
-                        file_name="analysis_report.html",
-                        mime="text/html",
-                        use_container_width=True
-                    )
+                    html_report = report.read()
+
+                # --------------------------------------------
+                # Display HTML dashboard inside Streamlit
+                # --------------------------------------------
+
+                components.html(
+                    html_report,
+                    height=900,
+                    scrolling=True
+                )
+
+                # --------------------------------------------
+                # Download report
+                # --------------------------------------------
+
+                st.download_button(
+                    label="⬇️ Download HTML Report",
+                    data=html_report,
+                    file_name="analysis_report.html",
+                    mime="text/html",
+                    use_container_width=True
+                )
 
             else:
 
@@ -310,9 +309,7 @@ if run_button:
 
     except Exception as error:
 
-        progress.progress(
-            100
-        )
+        progress.progress(100)
 
         status.error(
             "Could not start the analysis pipeline."
